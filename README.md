@@ -156,3 +156,18 @@ NER_v11_KoGNER/
 | `use_gated_span_fusion` | Gated span-token fusion | v11.2 |
 | `use_span_pruning` | Top-k span pruning | v11.3 |
 | `fusion_method` | concat / gated / attention | v11 |
+
+
+## Usage
+
+Training runs on **Google Colab with T4/A100 GPU**:
+
+1. Push to GitHub
+2. Open on Colab: `notebooks/NER_Thesis_Colab_v11.ipynb`
+3. Select GPU runtime and run cells sequentially
+
+## Installation (local)
+
+```bash
+pip install -r requirements.txt
+```
