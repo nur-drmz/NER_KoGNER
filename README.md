@@ -1,8 +1,23 @@
-# Adapted KoGNER — Knowledge Graph Distillation for Biomedical NER (v11.6)
+# KoGNER — Knowledge Graph Distillation for Biomedical NER
 
-Biomedical Named Entity Recognition for **GENE**, **DISEASE**, **CHEMICAL** entities using an adapted KoGNER architecture (arXiv:2503.15737) with BioBERT, span-entity matching, KG distillation, knowledge fusion, CRF decoding, and contrastive learning.
+Biomedical Named Entity Recognition for **GENE**, **DISEASE**, **CHEMICAL** entities using an adapted KoGNER architecture (arXiv:2503.15737) with BioBERT, span-entity matching, KG distillation, knowledge fusion, CRF decoding, and **adaptive multi-task loss weighting** (Kendall et al., 2018).
 
-## Architecture (v11.6)
+## Status: **READY TO RUN**
+
+**The notebook is ready to run on Google Colab with A100 GPU.**
+
+## Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Adaptive Loss Weighting** | Learns per-task uncertainty σ to automatically balance 7 losses: `L = Σ (1/(2σ²)·L_i + log(σ))` |
+| **Loss Randomization** | Stochastically drops non-essential losses (10% prob every 50 steps) for stability analysis |
+| **3-Stage Training** | Warmup (5ep) → Structural (5ep) → Refinement (7ep) with stage-specific active losses |
+| **Live Visualization** | Full training dashboard: loss curves, F1 scores, adaptive weights, gradient norms |
+| **A100 Optimization** | bf16 autocast + TF32 matmul for 2x speedup |
+| **Google Drive Checkpoints** | Auto-save after every epoch, resume on disconnect |
+
+## Architecture
 
 ```
 Input tokens
@@ -66,8 +81,8 @@ Input tokens
 ## Project Structure
 
 ```
-NER_v11_KoGNER/
-├── src/                          # v11 model source code
+NER_KoGNER/
+├── src/                          # Model source code
 │   ├── models/                   #   BioBERT encoder, span repr, entity type encoder,
 │   │                             #   span-entity matcher, KG teacher, CRF decoder,
 │   │                             #   span pruning, evidence aggregation, span-token fusion
@@ -79,27 +94,26 @@ NER_v11_KoGNER/
 │   ├── integration/              #   BioPortal REST API client
 │   ├── calibration/              #   Per-entity threshold search
 │   ├── trainer/                  #   Training loop, composite loss, data pipeline,
-│   │                             #   v11 losses, 3-stage training schedule
+│   │                             #   adaptive loss weighting, 3-stage training schedule
 │   ├── evaluator/                #   Entity-level metrics
-│   └── interface/                #   Version comparison + ablation runner
+│   └── interface/                #   Ablation runner
 ├── configs/
-│   └── v11_config.yaml           # Full experiment configuration
+│   └── config.yaml               # Experiment configuration
 ├── notebooks/
-│   └── NER_Thesis_Colab_v11.ipynb # Colab notebook
-├── scripts/                      # v11.6 infrastructure
+│   └── NER_Thesis_Colab.ipynb    # Google Colab notebook
+├── scripts/
 │   ├── train_local.py            #   Local training
 │   ├── remote_train.py           #   Remote A100 training via SSH
 │   ├── checkpoint_manager.py     #   Auto-resume checkpoints
-│   └── experiment_tracker.py     #   Experiment logging
+│   ├── experiment_tracker.py     #   Experiment logging
+│   └── fix_v13_notebook.py       #   Notebook bug fix script
 ├── analysis/
 │   └── performance_debugger.py   # Diagnostics module
 ├── monitor/                      # Colab monitoring + resilience
 ├── docs/
-│   └── v11.6_architecture.md     # Full architecture documentation
-├── logs/model_versions/          # Version changelogs (v11.1–v11.6)
+│   └── architecture.md           # Full architecture documentation
 ├── data/                         # Datasets (downloaded at runtime)
 ├── results/                      # Evaluation outputs
-├── run_v11_colab.py              # Standalone Colab runner script
 ├── .windsurf/prompts/            # Architecture prompt for Cascade
 ├── requirements.txt
 └── README.md
@@ -123,48 +137,57 @@ NER_v11_KoGNER/
 | 5 | B-DISEASE | B | DISEASE |
 | 6 | I-DISEASE | I | DISEASE |
 
-## Loss Functions (Composite, 7 terms — staged activation)
+## Loss Functions
 
-| Loss | λ | Description | Stage |
-|------|:-:|-------------|:-----:|
-| NER (Focal/CRF) | 1.0 | Primary classification (γ=2.0, per-class α) | 1+ |
-| Boundary | 0.3 | Span boundary detection | 2A+ |
-| Entity Type | 0.3 | Entity type classification | 2A+ |
-| Knowledge Alignment | 0.1 | Token-knowledge cosine alignment | 2A+ |
-| BCE Language | 0.5 | Span-entity matching [KoGNER §2.2] | 1+ |
-| KG Distillation | 0.15 | MSE KG teacher distillation [KoGNER §2.3] | 2A |
-| Contrastive | 0.2 | Supervised contrastive on entity embeddings | 2B |
+### Adaptive Multi-Task Loss (Kendall et al., 2018)
 
-### 3-Stage Training Schedule (v11.5)
+**Total Loss:** `L = Σ_i [ (1/(2σ²_i))·L_i + (1/2)·log(σ²_i) ]`
 
-| Stage | Epochs | Active Losses |
-|-------|--------|---------------|
-| 1 (warmup) | 3 | NER + CRF |
-| 2A (structural) | 5 | + boundary + type + distillation |
-| 2B (contrastive) | 7 | + contrastive (no distillation) |
+Where σ_i is a **learnable uncertainty parameter** for each task. The model automatically balances 7 losses:
+
+| Loss | Description |
+|------|-------------|
+| NER (Focal/CRF) | Primary classification (γ=2.0, per-class α) |
+| Boundary | Span boundary detection (3-class) |
+| Entity Type | Entity type classification (4-class) |
+| Knowledge Alignment | Token-knowledge cosine alignment |
+| BCE Language | Span-entity matching [KoGNER §2.2] |
+| KG Distillation | MSE KG teacher distillation [KoGNER §2.3] |
+| CRF | Negative log-likelihood from CRF decoder |
+
+**Loss Randomization:** Non-essential losses (boundary, type, alignment, distillation) are stochastically dropped with 10% probability every 50 steps to analyze training stability.
+
+### 3-Stage Training Schedule
+
+| Stage | Epochs | Active Losses | LR Multiplier |
+|-------|:------:|---------------|:-------------:|
+| 1 (warmup) | 5 | NER + CRF + language | 1.0 |
+| 2A (structural) | 5 | + boundary + type + distillation + alignment | 1.0 |
+| 2B (refinement) | 7 | NER + CRF + language + boundary + type + alignment | 1.0 |
 
 ## Feature Flags
 
-| Flag | Effect when `True` | Version |
-|------|-------------------|---------|
-| `use_span_representation` | SpanRepresentationLayer | v11 |
-| `use_knowledge_fusion` | KnowledgeFusionLayer (configurable method) | v11 |
-| `use_crf_decoder` | CRF decoder with BIO constraints | v11 |
-| `use_contrastive_loss` | ContrastiveEntityLoss | v11 |
-| `use_distillation_loss` | KnowledgeDistillationLoss | v11 |
-| `use_biencoder` | Bi-encoder span-entity matching [KoGNER] | v11 |
-| `use_gated_span_fusion` | Gated span-token fusion | v11.2 |
-| `use_span_pruning` | Top-k span pruning | v11.3 |
-| `fusion_method` | concat / gated / attention | v11 |
-
+| Flag | Effect when `True` |
+|------|-------------------|
+| `use_span_representation` | SpanRepresentationLayer |
+| `use_knowledge_fusion` | KnowledgeFusionLayer (configurable method) |
+| `use_crf_decoder` | CRF decoder with BIO constraints |
+| `use_contrastive_loss` | ContrastiveEntityLoss |
+| `use_distillation_loss` | KnowledgeDistillationLoss |
+| `use_biencoder` | Bi-encoder span-entity matching [KoGNER] |
+| `use_gated_span_fusion` | Gated span-token fusion |
+| `use_span_pruning` | Top-k span pruning |
+| `fusion_method` | concat / gated / attention |
 
 ## Usage
 
-Training runs on **Google Colab with T4/A100 GPU**:
+Training runs on **Google Colab with A100 GPU** (optimized for bf16 + TF32):
 
-1. Push to GitHub
-2. Open on Colab: `notebooks/NER_Thesis_Colab_v11.ipynb`
-3. Select GPU runtime and run cells sequentially
+1. Upload `notebooks/NER_Thesis_Colab.ipynb` to Google Colab
+2. Select **A100 GPU** runtime (Runtime → Change runtime type → A100 GPU)
+3. Mount Google Drive (for checkpoints)
+4. Run all cells sequentially
+
 
 ## Installation (local)
 
